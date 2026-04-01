@@ -1,0 +1,76 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Question {
+  id            String   @id @default(cuid())
+  prompt        String
+  optionA       String
+  optionB       String
+  optionC       String
+  optionD       String
+  correctOption String   // 'A' | 'B' | 'C' | 'D'
+  category      String?
+  difficulty    String?  // 'Easy' | 'Medium' | 'Hard'
+  createdAt     DateTime @default(now())
+  deletedAt     DateTime?
+  rounds        Round[]
+}
+
+model Round {
+  id              String      @id @default(cuid())
+  questionId      String
+  question        Question    @relation(fields: [questionId], references: [id])
+  status          String      @default("idle") // idle|live|closed|resolved
+  durationSeconds Int
+  startTime       DateTime?
+  endTime         DateTime?
+  createdAt       DateTime    @default(now())
+  answers         Answer[]
+  result          RoundResult?
+}
+
+model Answer {
+  id             String   @id @default(cuid())
+  roundId        String
+  round          Round    @relation(fields: [roundId], references: [id])
+  userPlatformId String
+  username       String
+  selectedOption String   // 'A' | 'B' | 'C' | 'D'
+  submittedAt    DateTime @default(now())
+
+  @@unique([roundId, userPlatformId])
+  @@index([roundId])
+}
+
+model RoundResult {
+  id                String   @id @default(cuid())
+  roundId           String   @unique
+  round             Round    @relation(fields: [roundId], references: [id])
+  correctOption     String
+  totalAnswers      Int
+  countA            Int      @default(0)
+  countB            Int      @default(0)
+  countC            Int      @default(0)
+  countD            Int      @default(0)
+  correctCount      Int
+  correctPercentage Float
+  resolvedAt        DateTime @default(now())
+}
+
+model Score {
+  id             String   @id @default(cuid())
+  userPlatformId String   @unique
+  username       String
+  score          Int      @default(0)
+  roundsPlayed   Int      @default(0)
+  correctAnswers Int      @default(0)
+  lastUpdatedAt  DateTime @default(now())
+
+  @@index([score(sort: Desc)])
+}

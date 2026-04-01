@@ -1,0 +1,46 @@
+{
+  "name": "trivia-live-backend",
+  "version": "1.0.0",
+  "description": "Production-grade Node.js + TypeScript backend for Trivia Live Engine",
+  "main": "dist/main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc --project tsconfig.json",
+    "start": "node dist/main.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:push": "prisma db push",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:studio": "prisma studio"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "@fastify/cors": "^9.0.1",
+    "@prisma/client": "^5.22.0",
+    "@t3-oss/env-core": "^0.11.1",
+    "bullmq": "^5.14.0",
+    "dotenv": "^17.3.1",
+    "fastify": "^4.28.0",
+    "fastify-plugin": "^4.5.1",
+    "ioredis": "^5.4.1",
+    "socket.io": "^4.7.5",
+    "tiktok-live-connector": "^1.2.3",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "pino-pretty": "^13.1.3",
+    "prisma": "^5.22.0",
+    "supertest": "^7.0.0",
+    "tsx": "^4.19.1",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.1"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  }
+}
