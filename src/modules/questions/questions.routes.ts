@@ -40,6 +40,36 @@ export async function questionsRoutes(fastify: FastifyInstance) {
     }
   );
 
+  // POST /api/questions/ai-preview — operator only
+  fastify.post(
+    '/questions/ai-preview',
+    { preHandler: requireOperator },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const bodySchema = z.object({
+        topic: z.string().min(1),
+        difficulty: z.enum(['Easy', 'Medium', 'Hard']),
+        count: z.number().int().min(1).max(5).default(1),
+      });
+
+      const parsed = bodySchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: 'Validation failed', details: parsed.error.issues });
+      }
+
+      try {
+        const { generateQuestions } = await import('../ai/ai.service.js');
+        const generated = await generateQuestions(parsed.data.topic, parsed.data.difficulty, parsed.data.count);
+        return reply.send(generated);
+      } catch (err) {
+        fastify.log.error({ err }, 'AI question preview generation failed');
+        return reply.status(500).send({
+          error: 'AI generation failed',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+      }
+    }
+  );
+
   // POST /api/questions/generate — operator only (must be before /:id)
   fastify.post(
     '/questions/generate',

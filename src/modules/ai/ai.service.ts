@@ -15,16 +15,25 @@ export async function generateQuestion(
   topic: string,
   difficulty: 'Easy' | 'Medium' | 'Hard'
 ): Promise<CreateQuestionInput> {
+  const questions = await generateQuestions(topic, difficulty, 1);
+  return questions[0];
+}
+
+export async function generateQuestions(
+  topic: string,
+  difficulty: 'Easy' | 'Medium' | 'Hard',
+  count: number = 1
+): Promise<CreateQuestionInput[]> {
   const client = getClient();
 
   const message = await client.messages.create({
     model: 'claude-sonnet-4-20250514',
-    max_tokens: 500,
-    system: `You are a trivia question generator. Always respond with ONLY a valid JSON object and nothing else. No markdown, no preamble, no explanation. The JSON must have exactly these fields: prompt (string), optionA (string), optionB (string), optionC (string), optionD (string), correctOption ('A'|'B'|'C'|'D'), category (string), difficulty ('Easy'|'Medium'|'Hard').`,
+    max_tokens: 2000,
+    system: `You are a trivia question generator. Always respond with ONLY a valid JSON array of objects and nothing else. No markdown, no preamble, no explanation. Each object in the array must have exactly these fields: prompt (string), optionA (string), optionB (string), optionC (string), optionD (string), correctOption ('A'|'B'|'C'|'D'), category (string), difficulty ('Easy'|'Medium'|'Hard').`,
     messages: [
       {
         role: 'user',
-        content: `Generate a ${difficulty} trivia question about ${topic}. Return only the JSON object.`,
+        content: `Generate ${count} ${difficulty} level trivia questions about ${topic}. Return only the JSON array.`,
       },
     ],
   });
@@ -39,10 +48,22 @@ export async function generateQuestion(
     throw new Error(`AI returned invalid JSON: ${clean.slice(0, 200)}`);
   }
 
-  const parsed = GeneratedQuestionResponseSchema.safeParse(parsedJson);
-  if (!parsed.success) {
-    throw new Error(`AI response failed validation: ${parsed.error.message}`);
+  if (!Array.isArray(parsedJson)) {
+    // If it returned a single object instead of array, wrap it
+    parsedJson = [parsedJson];
   }
 
-  return parsed.data as GeneratedQuestionResponse & CreateQuestionInput;
+  const results: CreateQuestionInput[] = [];
+  for (const item of (parsedJson as any[])) {
+    const parsed = GeneratedQuestionResponseSchema.safeParse(item);
+    if (parsed.success) {
+      results.push(parsed.data as GeneratedQuestionResponse & CreateQuestionInput);
+    }
+  }
+
+  if (results.length === 0) {
+    throw new Error('AI failed to generate any valid questions');
+  }
+
+  return results;
 }
