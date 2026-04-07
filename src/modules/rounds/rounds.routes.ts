@@ -48,6 +48,102 @@ export async function roundsRoutes(
     return reply.send({ ...rest, question: safeQuestion });
   });
 
+  // POST /api/sessions — operator only
+  fastify.post(
+    '/sessions',
+    { preHandler: requireOperator },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { name } = req.body as { name: string };
+      if (!name) return reply.status(400).send({ error: 'Session name is required' });
+
+      try {
+        const session = await fastify.prisma.gameSession.create({
+          data: { name },
+        });
+        return reply.status(201).send(session);
+      } catch (err) {
+        return reply.status(500).send({ error: 'Could not create session' });
+      }
+    }
+  );
+
+  // GET /api/sessions — operator only
+  fastify.get(
+    '/sessions',
+    { preHandler: requireOperator },
+    async (_req: FastifyRequest, reply: FastifyReply) => {
+      const sessions = await fastify.prisma.gameSession.findMany({
+        take: 20,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          rounds: {
+            include: {
+              question: {
+                select: { id: true, prompt: true, category: true, difficulty: true },
+              },
+              result: true,
+            },
+            orderBy: { createdAt: 'asc' },
+          },
+        },
+      });
+      return reply.send(sessions);
+    }
+  );
+
+  // GET /api/sessions/:id — operator only
+  fastify.get<{ Params: { id: string } }>(
+    '/sessions/:id',
+    { preHandler: requireOperator },
+    async (req, reply) => {
+      const session = await fastify.prisma.gameSession.findUnique({
+        where: { id: req.params.id },
+        include: {
+          rounds: {
+            include: {
+              question: {
+                select: { id: true, prompt: true, category: true, difficulty: true },
+              },
+              result: true,
+            },
+            orderBy: { createdAt: 'asc' },
+          },
+        },
+      });
+
+      if (!session) return reply.status(404).send({ error: 'Session not found' });
+
+      // Calculate leaderboard specifically for this session
+      const roundsWithAnswers = await fastify.prisma.round.findMany({
+        where: { gameSessionId: req.params.id },
+        include: {
+          answers: true,
+          question: true
+        }
+      });
+      
+      const userScores: Record<string, { username: string; score: number }> = {};
+      
+      for (const r of roundsWithAnswers) {
+         const correctOpt = r.question.correctOption;
+         for (const a of r.answers) {
+            if (a.selectedOption === correctOpt) {
+               if (!userScores[a.userPlatformId]) {
+                  userScores[a.userPlatformId] = { username: a.username, score: 0 };
+               }
+               userScores[a.userPlatformId].score += 1;
+            }
+         }
+      }
+      
+      const leaderboard = Object.entries(userScores)
+        .map(([userId, data]) => ({ userId, username: data.username, score: data.score }))
+        .sort((a, b) => b.score - a.score);
+
+      return reply.send({ ...session, leaderboard });
+    }
+  );
+
   // POST /api/rounds/start — operator only
   fastify.post(
     '/rounds/start',
@@ -61,7 +157,8 @@ export async function roundsRoutes(
       try {
         const round = await roundEngine.startRound(
           parsed.data.questionId,
-          parsed.data.durationSeconds
+          parsed.data.durationSeconds,
+          parsed.data.gameSessionId
         );
         return reply.status(201).send(round);
       } catch (err) {

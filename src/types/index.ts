@@ -23,6 +23,7 @@ export interface Question {
 
 export interface ActiveRoundState {
   id: string;
+  gameSessionId?: string;
   questionId: string;
   status: 'idle' | 'live' | 'closed' | 'resolved';
   startTime: number;

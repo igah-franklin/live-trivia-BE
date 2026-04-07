@@ -20,7 +20,7 @@ export class RoundEngine {
 
   // ─── Start Round ─────────────────────────────────────────────────────────
 
-  async startRound(questionId: string, durationSeconds: number) {
+  async startRound(questionId: string, durationSeconds: number, gameSessionId?: string) {
     // Guard: reject if a round is already live
     const existing = await this.redis.get(RedisKeys.ROUND_ACTIVE);
     if (existing) {
@@ -37,6 +37,7 @@ export class RoundEngine {
     const round = await this.prisma.round.create({
       data: {
         questionId,
+        gameSessionId,
         status: 'live',
         durationSeconds,
         startTime: new Date(),
@@ -48,6 +49,7 @@ export class RoundEngine {
 
     const state: ActiveRoundState = {
       id: round.id,
+      gameSessionId,
       questionId,
       status: 'live',
       startTime: now,
@@ -77,6 +79,7 @@ export class RoundEngine {
     // Emit safe (no correctOption) to all clients
     this.io.emit(SocketEvents.ROUND_STARTED, {
       roundId: round.id,
+      gameSessionId,
       questionId,
       prompt: question.prompt,
       options: state.question.options,
@@ -234,15 +237,41 @@ export class RoundEngine {
     // Get top 10 leaderboard
     const leaderboard = await this.getTopLeaderboard();
 
+    // Compute session leaderboard if part of a game session
+    let sessionLeaderboard = undefined;
+    if (round.gameSessionId) {
+      const roundsWithAnswers = await this.prisma.round.findMany({
+        where: { gameSessionId: round.gameSessionId },
+        include: { answers: true, question: true }
+      });
+      const userScores: Record<string, { username: string; score: number }> = {};
+      for (const r of roundsWithAnswers) {
+         const correctOpt = r.question.correctOption;
+         for (const a of r.answers) {
+            if (a.selectedOption === correctOpt) {
+               if (!userScores[a.userPlatformId]) {
+                  userScores[a.userPlatformId] = { username: a.username, score: 0 };
+               }
+               userScores[a.userPlatformId].score += 1;
+            }
+         }
+      }
+      sessionLeaderboard = Object.entries(userScores)
+        .map(([userId, data]) => ({ userId, username: data.username, score: data.score }))
+        .sort((a, b) => b.score - a.score);
+    }
+
     // Emit resolved event to all clients (now reveal correctOption)
     this.io.emit(SocketEvents.ROUND_RESOLVED, {
       roundId,
+      gameSessionId: round.gameSessionId,
       correctOption,
       distribution: dist,
       correctCount,
       correctPercentage,
       totalAnswers,
       leaderboard,
+      sessionLeaderboard,
     });
 
     // Emit leaderboard update

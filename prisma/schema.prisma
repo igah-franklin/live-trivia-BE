@@ -23,16 +23,26 @@ model Question {
 }
 
 model Round {
-  id              String      @id @default(cuid())
+  id              String       @id @default(cuid())
   questionId      String
-  question        Question    @relation(fields: [questionId], references: [id])
-  status          String      @default("idle") // idle|live|closed|resolved
+  question        Question     @relation(fields: [questionId], references: [id])
+  gameSessionId   String?
+  gameSession     GameSession? @relation(fields: [gameSessionId], references: [id])
+  status          String       @default("idle") // idle|live|closed|resolved
   durationSeconds Int
   startTime       DateTime?
   endTime         DateTime?
-  createdAt       DateTime    @default(now())
+  createdAt       DateTime     @default(now())
   answers         Answer[]
   result          RoundResult?
+}
+
+model GameSession {
+  id        String   @id @default(cuid())
+  name      String
+  status    String   @default("active") // active | completed
+  createdAt DateTime @default(now())
+  rounds    Round[]
 }
 
 model Answer {
