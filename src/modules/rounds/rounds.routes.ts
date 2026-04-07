@@ -13,10 +13,12 @@ export async function roundsRoutes(
   fastify.get(
     '/rounds',
     { preHandler: requireOperator },
-    async (_req: FastifyRequest, reply: FastifyReply) => {
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const accountId = req.headers['x-account-id'] as string | undefined;
       const rounds = await fastify.prisma.round.findMany({
         take: 20,
         orderBy: { createdAt: 'desc' },
+                ...(accountId ? { where: { accountId } as any } : {}),
         include: {
           question: {
             select: {
@@ -34,8 +36,9 @@ export async function roundsRoutes(
   );
 
   // GET /api/rounds/active — public, correctOption excluded
-  fastify.get('/rounds/active', async (_req: FastifyRequest, reply: FastifyReply) => {
-    const state = await roundEngine.getActiveRoundState();
+  fastify.get('/rounds/active', async (req: FastifyRequest, reply: FastifyReply) => {
+    const accountId = req.headers['x-account-id'] as string | undefined;
+    const state = await roundEngine.getActiveRoundState(accountId);
 
     if (!state) {
       return reply.send(null);
@@ -56,9 +59,11 @@ export async function roundsRoutes(
       const { name } = req.body as { name: string };
       if (!name) return reply.status(400).send({ error: 'Session name is required' });
 
+      const accountId = req.headers['x-account-id'] as string | undefined;
+
       try {
         const session = await fastify.prisma.gameSession.create({
-          data: { name },
+          data: { name, accountId } as any,
         });
         return reply.status(201).send(session);
       } catch (err) {
@@ -71,10 +76,12 @@ export async function roundsRoutes(
   fastify.get(
     '/sessions',
     { preHandler: requireOperator },
-    async (_req: FastifyRequest, reply: FastifyReply) => {
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const accountId = req.headers['x-account-id'] as string | undefined;
       const sessions = await fastify.prisma.gameSession.findMany({
         take: 20,
         orderBy: { createdAt: 'desc' },
+                ...(accountId ? { where: { accountId } as any } : {}),
         include: {
           rounds: {
             include: {
@@ -155,10 +162,12 @@ export async function roundsRoutes(
       }
 
       try {
+        const accountId = req.headers['x-account-id'] as string | undefined;
         const round = await roundEngine.startRound(
           parsed.data.questionId,
           parsed.data.durationSeconds,
-          parsed.data.gameSessionId
+          parsed.data.gameSessionId,
+          accountId
         );
         return reply.status(201).send(round);
       } catch (err) {
@@ -174,9 +183,10 @@ export async function roundsRoutes(
   fastify.post(
     '/rounds/end',
     { preHandler: requireOperator },
-    async (_req: FastifyRequest, reply: FastifyReply) => {
+    async (req: FastifyRequest, reply: FastifyReply) => {
       try {
-        await roundEngine.closeRound();
+        const accountId = req.headers['x-account-id'] as string | undefined;
+        await roundEngine.closeRound(accountId);
         return reply.send({ ok: true });
       } catch (err) {
         return reply.status(409).send({
@@ -191,9 +201,10 @@ export async function roundsRoutes(
   fastify.post(
     '/rounds/cancel',
     { preHandler: requireOperator },
-    async (_req: FastifyRequest, reply: FastifyReply) => {
+    async (req: FastifyRequest, reply: FastifyReply) => {
       try {
-        await roundEngine.cancelRound();
+        const accountId = req.headers['x-account-id'] as string | undefined;
+        await roundEngine.cancelRound(accountId);
         return reply.send({ ok: true });
       } catch (err) {
         return reply.status(409).send({

@@ -32,8 +32,9 @@ export async function scoresRoutes(fastify: FastifyInstance) {
   fastify.get(
     '/leaderboard/full',
     { preHandler: requireOperator },
-    async (_req: FastifyRequest, reply: FastifyReply) => {
-      const scores = await svc.getAll();
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const accountId = req.headers['x-account-id'] as string | undefined;
+      const scores = await svc.getAll(accountId);
       return reply.send(scores);
     }
   );

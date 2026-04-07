@@ -9,8 +9,8 @@ export class QuestionsService {
     private readonly redis: Redis,
   ) {}
 
-  async findAll(includeCorrectOption = false) {
-    const cacheKey = RedisKeys.QUESTIONS_CACHE;
+  async findAll(includeCorrectOption = false, accountId?: string) {
+    const cacheKey = accountId ? `${RedisKeys.QUESTIONS_CACHE}:${accountId}` : RedisKeys.QUESTIONS_CACHE;
     const cached = await this.redis.get(cacheKey);
 
     if (cached) {
@@ -24,8 +24,11 @@ export class QuestionsService {
       return questions;
     }
 
+    const where: any = { deletedAt: null };
+    if (accountId) where.accountId = accountId;
+
     const questions = await this.prisma.question.findMany({
-      where: { deletedAt: null },
+      where,
       orderBy: { createdAt: 'asc' },
     });
 
@@ -57,27 +60,27 @@ export class QuestionsService {
     return formatted;
   }
 
-  async create(data: CreateQuestionInput) {
-    const question = await this.prisma.question.create({ data });
-    await this.invalidateCache();
+  async create(data: CreateQuestionInput, accountId?: string) {
+    const question = await this.prisma.question.create({ data: { ...data, accountId } as any });
+    await this.invalidateCache(accountId);
     return this.formatQuestion(question);
   }
 
-  async update(id: string, data: UpdateQuestionInput) {
+  async update(id: string, data: UpdateQuestionInput, accountId?: string) {
     const question = await this.prisma.question.update({
       where: { id },
       data,
     });
-    await this.invalidateCache();
+    await this.invalidateCache(accountId);
     return this.formatQuestion(question);
   }
 
-  async softDelete(id: string) {
+  async softDelete(id: string, accountId?: string) {
     const question = await this.prisma.question.update({
       where: { id },
       data: { deletedAt: new Date() },
     });
-    await this.invalidateCache();
+    await this.invalidateCache(accountId);
     return question;
   }
 
@@ -109,7 +112,8 @@ export class QuestionsService {
     };
   }
 
-  private async invalidateCache() {
+  private async invalidateCache(accountId?: string) {
     await this.redis.del(RedisKeys.QUESTIONS_CACHE);
+    if (accountId) await this.redis.del(`${RedisKeys.QUESTIONS_CACHE}:${accountId}`);
   }
 }

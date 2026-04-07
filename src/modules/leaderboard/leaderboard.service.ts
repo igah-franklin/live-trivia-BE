@@ -13,12 +13,13 @@ export class LeaderboardService {
    * Get top N entries from Redis sorted set (O(log N)).
    * Falls back to Postgres if Redis is unavailable.
    */
-  async getTopLeaderboard(limit = 10): Promise<LeaderboardEntry[]> {
+  async getTopLeaderboard(limit = 10, accountId?: string): Promise<LeaderboardEntry[]> {
+    const redisKey = accountId ? `${RedisKeys.LEADERBOARD}:${accountId}` : RedisKeys.LEADERBOARD;
     try {
-      const raw = await this.redis.zrevrange(RedisKeys.LEADERBOARD, 0, limit - 1, 'WITHSCORES');
+      const raw = await this.redis.zrevrange(redisKey, 0, limit - 1, 'WITHSCORES');
 
       if (raw.length === 0) {
-        return this.getFromPostgres(limit);
+        return this.getFromPostgres(limit, accountId);
       }
 
       const entries: LeaderboardEntry[] = [];
@@ -34,12 +35,13 @@ export class LeaderboardService {
       return entries;
     } catch {
       // Redis unavailable — fall back to Postgres
-      return this.getFromPostgres(limit);
+      return this.getFromPostgres(limit, accountId);
     }
   }
 
-  private async getFromPostgres(limit: number): Promise<LeaderboardEntry[]> {
+  private async getFromPostgres(limit: number, accountId?: string): Promise<LeaderboardEntry[]> {
     const scores = await this.prisma.score.findMany({
+      where: accountId ? { accountId } as any : {},
       take: limit,
       orderBy: { score: 'desc' },
     });

@@ -7,8 +7,20 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Account {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  questions Question[]
+  sessions  GameSession[]
+  scores    Score[]
+  rounds    Round[]
+  createdAt DateTime @default(now())
+}
+
 model Question {
   id            String   @id @default(cuid())
+  accountId     String?
+  account       Account? @relation(fields: [accountId], references: [id])
   prompt        String
   optionA       String
   optionB       String
@@ -24,6 +36,8 @@ model Question {
 
 model Round {
   id              String       @id @default(cuid())
+  accountId       String?
+  account         Account?     @relation(fields: [accountId], references: [id])
   questionId      String
   question        Question     @relation(fields: [questionId], references: [id])
   gameSessionId   String?
@@ -39,6 +53,8 @@ model Round {
 
 model GameSession {
   id        String   @id @default(cuid())
+  accountId String?
+  account   Account? @relation(fields: [accountId], references: [id])
   name      String
   status    String   @default("active") // active | completed
   createdAt DateTime @default(now())
@@ -75,12 +91,15 @@ model RoundResult {
 
 model Score {
   id             String   @id @default(cuid())
-  userPlatformId String   @unique
+  accountId      String?
+  account        Account? @relation(fields: [accountId], references: [id])
+  userPlatformId String   
   username       String
   score          Int      @default(0)
   roundsPlayed   Int      @default(0)
   correctAnswers Int      @default(0)
   lastUpdatedAt  DateTime @default(now())
 
+  @@unique([accountId, userPlatformId])
   @@index([score(sort: Desc)])
 }
