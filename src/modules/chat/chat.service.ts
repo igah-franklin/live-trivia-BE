@@ -37,16 +37,18 @@ export class ChatService {
   /**
    * Shared pipeline for both TikTok and simulator messages.
    */
-  async processMessage(input: {
+   async processMessage(input: {
     userId: string;
     username: string;
     text: string;
     receivedAt: number;
+    accountId?: string;
   }): Promise<ChatMessage> {
-    const { userId, username, text, receivedAt } = input;
+    const { userId, username, text, receivedAt, accountId = 'default' } = input;
 
     // Get current round state
-    const rawState = await this.redis.get(RedisKeys.ROUND_ACTIVE);
+    const activeKey = accountId === 'default' ? RedisKeys.ROUND_ACTIVE : `${RedisKeys.ROUND_ACTIVE}:${accountId}`;
+    const rawState = await this.redis.get(activeKey);
     const state: ActiveRoundState | null = rawState ? JSON.parse(rawState) : null;
     const isRoundLive = state?.status === 'live';
 
@@ -63,6 +65,7 @@ export class ChatService {
         userPlatformId: userId,
         username,
         selectedOption: parsedAnswer,
+        accountId, // Pass it down!
       });
 
       isValid = result.recorded;
@@ -82,25 +85,35 @@ export class ChatService {
 
     // Push to Redis recent list (LPUSH + LTRIM — O(1))
     const serialized = JSON.stringify(chatMessage);
-    await this.redis.lpush(RedisKeys.CHAT_RECENT, serialized);
-    await this.redis.ltrim(RedisKeys.CHAT_RECENT, 0, 99);
+    const recentKey = accountId === 'default' ? RedisKeys.CHAT_RECENT : `${RedisKeys.CHAT_RECENT}:${accountId}`;
+    await this.redis.lpush(recentKey, serialized);
+    await this.redis.ltrim(recentKey, 0, 99);
 
     // Emit to operator room (all messages)
-    this.io.to('operator').emit(SocketEvents.CHAT_MESSAGE, chatMessage);
+    const operatorRoom = `operator:${accountId}`;
+    const overlayRoom = `overlay:${accountId}`;
+    
+    this.io.to(operatorRoom).emit(SocketEvents.CHAT_MESSAGE, chatMessage);
+    if (accountId === 'default') {
+      this.io.to('operator').emit(SocketEvents.CHAT_MESSAGE, chatMessage);
+    }
 
     // Emit to overlay room (valid answers only)
     if (isValid) {
-      this.io.to('overlay').emit(SocketEvents.CHAT_MESSAGE, {
+      this.io.to(overlayRoom).emit(SocketEvents.CHAT_MESSAGE, {
         ...chatMessage,
-        // Don't expose isDuplicate in overlay
       });
+      if (accountId === 'default') {
+        this.io.to('overlay').emit(SocketEvents.CHAT_MESSAGE, chatMessage);
+      }
     }
 
     return chatMessage;
   }
 
-  async getRecentMessages(): Promise<ChatMessage[]> {
-    const raw = await this.redis.lrange(RedisKeys.CHAT_RECENT, 0, 99);
+  async getRecentMessages(accountId: string = 'default'): Promise<ChatMessage[]> {
+    const recentKey = accountId === 'default' ? RedisKeys.CHAT_RECENT : `${RedisKeys.CHAT_RECENT}:${accountId}`;
+    const raw = await this.redis.lrange(recentKey, 0, 99);
     return raw.map(r => JSON.parse(r) as ChatMessage);
   }
 }

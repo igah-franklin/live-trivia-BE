@@ -50,7 +50,8 @@ export async function chatRoutes(
       }
 
       try {
-        await tiktokAdapter.connect(parsed.data.username);
+        const accountId = (req.headers['x-account-id'] as string) || 'default';
+        await tiktokAdapter.connect(parsed.data.username, accountId);
         return reply.send({ ok: true, message: `Connected to @${parsed.data.username}` });
       } catch (err) {
         return reply.status(500).send({
@@ -65,15 +66,29 @@ export async function chatRoutes(
   fastify.post(
     '/chat/tiktok/disconnect',
     { preHandler: requireOperator },
-    async (_req: FastifyRequest, reply: FastifyReply) => {
-      await tiktokAdapter.disconnect();
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const accountId = (req.headers['x-account-id'] as string) || 'default';
+      await tiktokAdapter.disconnect(accountId);
       return reply.send({ ok: true, message: 'TikTok disconnected' });
     }
   );
 
+  // GET /api/chat/tiktok/status — operator only
+  fastify.get(
+    '/chat/tiktok/status',
+    { preHandler: requireOperator },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const accountId = (req.headers['x-account-id'] as string) || 'default';
+      const connected = tiktokAdapter.isConnected(accountId);
+      const username = tiktokAdapter.getUsername(accountId);
+      return reply.send({ connected, username });
+    }
+  );
+
   // GET /api/chat/recent — public
-  fastify.get('/chat/recent', async (_req: FastifyRequest, reply: FastifyReply) => {
-    const messages = await chatService.getRecentMessages();
+  fastify.get('/chat/recent', async (req: FastifyRequest, reply: FastifyReply) => {
+    const accountId = (req.headers['x-account-id'] as string) || 'default';
+    const messages = await chatService.getRecentMessages(accountId);
     return reply.send(messages);
   });
 }
