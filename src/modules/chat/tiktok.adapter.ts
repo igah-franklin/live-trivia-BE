@@ -113,13 +113,14 @@ export class TikTokAdapter {
     const state = this.connections.get(accountId);
     if (!state) return;
 
+    this.connections.delete(accountId);
+
     try {
       await state.client.disconnect();
     } catch {
       // Ignore disconnect errors
     }
 
-    this.connections.delete(accountId);
     this.emitToAccount(accountId, SocketEvents.TIKTOK_DISCONNECTED, { username: state.username });
   }
 
@@ -133,10 +134,12 @@ export class TikTokAdapter {
 
   private emitToAccount(accountId: string, event: string, data: any) {
     const operatorRoom = `operator:${accountId}`;
+    const overlayRoom = `overlay:${accountId}`;
     this.io.to(operatorRoom).emit(event, data);
+    this.io.to(overlayRoom).emit(event, data);
     
     if (accountId === 'default') {
-      this.io.to('operator').emit(event, data);
+      this.io.to('operator').to('overlay').emit(event, data);
     }
   }
 }
