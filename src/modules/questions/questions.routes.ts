@@ -14,7 +14,8 @@ export async function questionsRoutes(fastify: FastifyInstance) {
   // GET /api/questions — public (no correctOption), operator (with correctOption)
   fastify.get('/questions', async (req: FastifyRequest, reply: FastifyReply) => {
     const isOperator = req.headers.authorization?.startsWith('Bearer ');
-    const questions = await svc.findAll(isOperator);
+    const accountId = req.headers['x-account-id'] as string | undefined;
+    const questions = await svc.findAll(isOperator, accountId);
     return reply.send(questions);
   });
 
@@ -35,8 +36,39 @@ export async function questionsRoutes(fastify: FastifyInstance) {
       if (!parsed.success) {
         return reply.status(400).send({ error: 'Validation failed', details: parsed.error.issues });
       }
-      const question = await svc.create(parsed.data);
+      const accountId = req.headers['x-account-id'] as string | undefined;
+      const question = await svc.create(parsed.data, accountId);
       return reply.status(201).send(question);
+    }
+  );
+
+  // POST /api/questions/ai-preview — operator only
+  fastify.post(
+    '/questions/ai-preview',
+    { preHandler: requireOperator },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const bodySchema = z.object({
+        topic: z.string().min(1),
+        difficulty: z.enum(['Easy', 'Medium', 'Hard']),
+        count: z.number().int().min(1).max(5).default(1),
+      });
+
+      const parsed = bodySchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: 'Validation failed', details: parsed.error.issues });
+      }
+
+      try {
+        const { generateQuestions } = await import('../ai/ai.service.js');
+        const generated = await generateQuestions(parsed.data.topic, parsed.data.difficulty, parsed.data.count);
+        return reply.send(generated);
+      } catch (err) {
+        fastify.log.error({ err }, 'AI question preview generation failed');
+        return reply.status(500).send({
+          error: 'AI generation failed',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+      }
     }
   );
 
@@ -57,7 +89,8 @@ export async function questionsRoutes(fastify: FastifyInstance) {
 
       try {
         const generated = await generateQuestion(parsed.data.topic, parsed.data.difficulty);
-        const question = await svc.create(generated);
+        const accountId = req.headers['x-account-id'] as string | undefined;
+        const question = await svc.create(generated, accountId);
         return reply.status(201).send(question);
       } catch (err) {
         fastify.log.error({ err }, 'AI question generation failed');
@@ -79,7 +112,8 @@ export async function questionsRoutes(fastify: FastifyInstance) {
         return reply.status(400).send({ error: 'Validation failed', details: parsed.error.issues });
       }
       try {
-        const question = await svc.update(req.params.id, parsed.data);
+        const accountId = req.headers['x-account-id'] as string | undefined;
+        const question = await svc.update(req.params.id, parsed.data, accountId);
         return reply.send(question);
       } catch {
         return reply.status(404).send({ error: 'Question not found' });
@@ -93,7 +127,8 @@ export async function questionsRoutes(fastify: FastifyInstance) {
     { preHandler: requireOperator },
     async (req, reply: FastifyReply) => {
       try {
-        await svc.softDelete(req.params.id);
+        const accountId = req.headers['x-account-id'] as string | undefined;
+        await svc.softDelete(req.params.id, accountId);
         return reply.status(204).send();
       } catch {
         return reply.status(404).send({ error: 'Question not found' });

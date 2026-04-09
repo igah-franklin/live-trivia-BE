@@ -14,6 +14,7 @@ import { roundsRoutes } from './modules/rounds/rounds.routes.js';
 import { scoresRoutes } from './modules/scores/scores.routes.js';
 import { leaderboardRoutes } from './modules/leaderboard/leaderboard.routes.js';
 import { chatRoutes } from './modules/chat/chat.routes.js';
+import { accountsRoutes } from './modules/accounts/accounts.routes.js';
 
 // Services
 import { RoundEngine } from './modules/rounds/round.engine.js';
@@ -107,6 +108,7 @@ export async function buildServer() {
     await app.register(scoresRoutes);
     await app.register(leaderboardRoutes);
     await app.register(async (a) => chatRoutes(a, { chatService, chatSimulator, tiktokAdapter }));
+    await app.register(accountsRoutes);
   }, { prefix: '/api' });
 
   // ─── Viewer count emitter ─────────────────────────────────────────────────

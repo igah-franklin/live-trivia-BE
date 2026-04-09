@@ -10,6 +10,7 @@ interface ProcessAnswerInput {
   userPlatformId: string;
   username: string;
   selectedOption: OptionKey;
+  accountId?: string;
 }
 
 interface ProcessAnswerResult {
@@ -21,12 +22,13 @@ interface ProcessAnswerResult {
 // In-memory distribution buffer for debounced broadcast
 interface DistributionBuffer {
   roundId: string;
+  accountId: string;
   data: AnswerDistribution;
   timer: NodeJS.Timeout | null;
 }
 
 export class AnswersService {
-  private distBuffer: DistributionBuffer | null = null;
+  private distBuffers = new Map<string, DistributionBuffer>();
   private readonly DEBOUNCE_MS = 500;
 
   constructor(
@@ -39,10 +41,11 @@ export class AnswersService {
    * CRITICAL HOT PATH — must complete in < 5ms (Redis only, async Postgres)
    */
   async processAnswer(input: ProcessAnswerInput): Promise<ProcessAnswerResult> {
-    const { roundId, userPlatformId, username, selectedOption } = input;
+    const { roundId, userPlatformId, username, selectedOption, accountId = 'default' } = input;
 
     // Step 1: Check if round is live (Redis GET — O(1))
-    const rawState = await this.redis.get(RedisKeys.ROUND_ACTIVE);
+    const activeKey = accountId === 'default' ? RedisKeys.ROUND_ACTIVE : `${RedisKeys.ROUND_ACTIVE}:${accountId}`;
+    const rawState = await this.redis.get(activeKey);
     if (!rawState) {
       return { recorded: false, isDuplicate: false, notLive: true };
     }
@@ -85,14 +88,21 @@ export class AnswersService {
     const totalAnswers = await this.redis.scard(answersKey);
 
     // Step 5: Emit answer:received to operator room only
-    this.io.to('operator').emit(SocketEvents.ANSWER_RECEIVED, {
+    this.io.to(`operator:${accountId}`).emit(SocketEvents.ANSWER_RECEIVED, {
       username,
       selectedOption,
       totalAnswers,
     });
+    if (accountId === 'default') {
+      this.io.to('operator').emit(SocketEvents.ANSWER_RECEIVED, {
+        username,
+        selectedOption,
+        totalAnswers,
+      });
+    }
 
     // Step 6: Debounced distribution broadcast (max once per 500ms)
-    this.scheduleDebouncedDistribution(roundId);
+    this.scheduleDebouncedDistribution(roundId, accountId);
 
     return { recorded: true, isDuplicate: false, notLive: false };
   }
@@ -100,27 +110,35 @@ export class AnswersService {
   /**
    * Debounce the distribution broadcast — buffer incoming and flush once per 500ms
    */
-  private scheduleDebouncedDistribution(roundId: string) {
-    if (this.distBuffer?.timer) {
+  private scheduleDebouncedDistribution(roundId: string, accountId: string = 'default') {
+    const existing = this.distBuffers.get(roundId);
+    if (existing?.timer) {
       // Already scheduled, let the existing timer fire
       return;
     }
 
     const timer = setTimeout(async () => {
       try {
-        await this.flushDistribution(roundId);
+        await this.flushDistribution(roundId, accountId);
       } catch {
         // Non-critical — distribution is best-effort
       }
-      if (this.distBuffer) {
-        this.distBuffer.timer = null;
+      const buffer = this.distBuffers.get(roundId);
+      if (buffer) {
+        buffer.timer = null;
+        this.distBuffers.delete(roundId);
       }
     }, this.DEBOUNCE_MS);
 
-    this.distBuffer = { roundId, data: { A: 0, B: 0, C: 0, D: 0, total: 0 }, timer };
+    this.distBuffers.set(roundId, {
+      roundId,
+      accountId,
+      data: { A: 0, B: 0, C: 0, D: 0, total: 0 },
+      timer
+    });
   }
 
-  private async flushDistribution(roundId: string) {
+  private async flushDistribution(roundId: string, accountId: string = 'default') {
     const distKey = RedisKeys.roundDist(roundId);
     const answersKey = RedisKeys.roundAnswers(roundId);
 
@@ -137,7 +155,10 @@ export class AnswersService {
       total,
     };
 
-    this.io.emit(SocketEvents.ANSWER_DISTRIBUTION, distribution);
+    this.io.to(`overlay:${accountId}`).to(`operator:${accountId}`).emit(SocketEvents.ANSWER_DISTRIBUTION, distribution);
+    if (accountId === 'default') {
+      this.io.to('overlay').to('operator').emit(SocketEvents.ANSWER_DISTRIBUTION, distribution);
+    }
   }
 
   // Exposed for use by rounds resolution

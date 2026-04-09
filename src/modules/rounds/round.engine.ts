@@ -6,10 +6,14 @@ import type { ActiveRoundState, LeaderboardEntry, ScoreJobData } from '../../typ
 import { RedisKeys } from '../../lib/redis.keys.js';
 import { SocketEvents } from '../../socket/events.js';
 
+interface AccountState {
+  timeLeft: number;
+  interval: NodeJS.Timeout | null;
+  currentRoundId: string | null;
+}
+
 export class RoundEngine {
-  private timeLeft = 0;
-  private interval: NodeJS.Timeout | null = null;
-  private currentRoundId: string | null = null;
+  private accountStates = new Map<string, AccountState>();
 
   constructor(
     private readonly redis: Redis,
@@ -18,15 +22,46 @@ export class RoundEngine {
     private readonly scoreQueue: Queue<ScoreJobData>,
   ) {}
 
+  private getAccountState(accountId: string = 'default'): AccountState {
+    let state = this.accountStates.get(accountId);
+    if (!state) {
+      state = { timeLeft: 0, interval: null, currentRoundId: null };
+      this.accountStates.set(accountId, state);
+    }
+    return state;
+  }
+
+  private emitToAccount(accountId: string = 'default', event: string, data: any) {
+    const operatorRoom = `operator:${accountId}`;
+    const overlayRoom = `overlay:${accountId}`;
+    
+    // Also emit to the legacy generic rooms if it's the default account
+    if (accountId === 'default') {
+      this.io.to('operator').to('overlay').to(operatorRoom).to(overlayRoom).emit(event, data);
+    } else {
+      this.io.to(operatorRoom).to(overlayRoom).emit(event, data);
+    }
+  }
+
+  private getActiveRoundKey(accountId: string = 'default') {
+    return accountId === 'default' ? RedisKeys.ROUND_ACTIVE : `${RedisKeys.ROUND_ACTIVE}:${accountId}`;
+  }
+
+  private getLeaderboardKey(accountId: string = 'default') {
+    return accountId === 'default' ? RedisKeys.LEADERBOARD : `${RedisKeys.LEADERBOARD}:${accountId}`;
+  }
+
   // ─── Start Round ─────────────────────────────────────────────────────────
 
-  async startRound(questionId: string, durationSeconds: number) {
-    // Guard: reject if a round is already live
-    const existing = await this.redis.get(RedisKeys.ROUND_ACTIVE);
+  async startRound(questionId: string, durationSeconds: number, gameSessionId?: string, accountId: string = 'default') {
+    const activeKey = this.getActiveRoundKey(accountId);
+    
+    // Guard: reject if a round is already live for this account
+    const existing = await this.redis.get(activeKey);
     if (existing) {
       const parsed = JSON.parse(existing) as ActiveRoundState;
       if (parsed.status === 'live') {
-        throw new Error('A round is already live. End it before starting a new one.');
+        throw new Error('A round is already live for this account. End it before starting a new one.');
       }
     }
 
@@ -37,10 +72,12 @@ export class RoundEngine {
     const round = await this.prisma.round.create({
       data: {
         questionId,
+        gameSessionId,
+        accountId: accountId === 'default' ? null : accountId,
         status: 'live',
         durationSeconds,
         startTime: new Date(),
-      },
+      } as any,
     });
 
     const now = Date.now();
@@ -48,6 +85,8 @@ export class RoundEngine {
 
     const state: ActiveRoundState = {
       id: round.id,
+      gameSessionId,
+      accountId,
       questionId,
       status: 'live',
       startTime: now,
@@ -66,17 +105,19 @@ export class RoundEngine {
     };
 
     // Write to Redis
-    await this.redis.set(RedisKeys.ROUND_ACTIVE, JSON.stringify(state));
+    await this.redis.set(activeKey, JSON.stringify(state));
     await this.redis.setex(RedisKeys.roundTimer(round.id), durationSeconds, '1');
 
     // Start internal timer
-    this.timeLeft = durationSeconds;
-    this.currentRoundId = round.id;
-    this.startTimer(round.id);
+    const accState = this.getAccountState(accountId);
+    accState.timeLeft = durationSeconds;
+    accState.currentRoundId = round.id;
+    this.startTimer(round.id, accountId);
 
-    // Emit safe (no correctOption) to all clients
-    this.io.emit(SocketEvents.ROUND_STARTED, {
+    // Emit to this account's rooms
+    this.emitToAccount(accountId, SocketEvents.ROUND_STARTED, {
       roundId: round.id,
+      gameSessionId,
       questionId,
       prompt: question.prompt,
       options: state.question.options,
@@ -90,42 +131,45 @@ export class RoundEngine {
 
   // ─── Timer ───────────────────────────────────────────────────────────────
 
-  private startTimer(roundId: string) {
-    if (this.interval) clearInterval(this.interval);
+  private startTimer(roundId: string, accountId: string = 'default') {
+    const accState = this.getAccountState(accountId);
+    if (accState.interval) clearInterval(accState.interval);
 
-    this.interval = setInterval(async () => {
-      this.timeLeft--;
+    accState.interval = setInterval(async () => {
+      accState.timeLeft--;
 
-      // Emit tick to all clients
-      this.io.emit(SocketEvents.ROUND_TICK, {
+      // Emit tick to this account's rooms
+      this.emitToAccount(accountId, SocketEvents.ROUND_TICK, {
         roundId,
-        timeLeft: this.timeLeft,
+        timeLeft: accState.timeLeft,
       });
 
-      if (this.timeLeft <= 0) {
-        await this.closeRound();
+      if (accState.timeLeft <= 0) {
+        await this.closeRound(accountId);
       }
     }, 1000);
   }
 
   // ─── Close Round ─────────────────────────────────────────────────────────
 
-  async closeRound() {
-    if (!this.currentRoundId) return;
+  async closeRound(accountId: string = 'default') {
+    const accState = this.getAccountState(accountId);
+    if (!accState.currentRoundId) return;
 
-    if (this.interval) {
-      clearInterval(this.interval);
-      this.interval = null;
+    if (accState.interval) {
+      clearInterval(accState.interval);
+      accState.interval = null;
     }
 
-    const roundId = this.currentRoundId;
+    const roundId = accState.currentRoundId;
+    const activeKey = this.getActiveRoundKey(accountId);
 
     // Update Redis state to 'closed'
-    const raw = await this.redis.get(RedisKeys.ROUND_ACTIVE);
+    const raw = await this.redis.get(activeKey);
     if (raw) {
       const state = JSON.parse(raw) as ActiveRoundState;
       state.status = 'closed';
-      await this.redis.set(RedisKeys.ROUND_ACTIVE, JSON.stringify(state));
+      await this.redis.set(activeKey, JSON.stringify(state));
     }
 
     // Update Postgres
@@ -134,14 +178,14 @@ export class RoundEngine {
       data: { status: 'closed', endTime: new Date() },
     });
 
-    this.io.emit(SocketEvents.ROUND_CLOSED, { roundId });
+    this.emitToAccount(accountId, SocketEvents.ROUND_CLOSED, { roundId });
 
     // Enqueue score resolution job
     await this.scoreQueue.add('resolve-round', { roundId }, {
-      jobId: `resolve-${roundId}`, // Deduplication key
+      jobId: `resolve-${roundId}`,
     });
 
-    this.currentRoundId = null;
+    accState.currentRoundId = null;
   }
 
   // ─── Resolve Round ───────────────────────────────────────────────────────
@@ -154,6 +198,9 @@ export class RoundEngine {
 
     if (!round) throw new Error(`Round not found: ${roundId}`);
 
+    const accountId = (round as any).accountId || 'default';
+    const activeKey = this.getActiveRoundKey(accountId);
+    const leaderboardKey = this.getLeaderboardKey(accountId);
     const correctOption = round.question.correctOption as 'A' | 'B' | 'C' | 'D';
 
     // Compute distribution
@@ -180,31 +227,35 @@ export class RoundEngine {
         countD: dist.D,
         correctCount,
         correctPercentage,
-      },
+      } as any,
     });
 
     // Update scores for correct answers
     const correctAnswers = round.answers.filter(a => a.selectedOption === correctOption);
-
     for (const answer of correctAnswers) {
-      // Update Redis leaderboard
       const member = `${answer.userPlatformId}:${answer.username}`;
-      await this.redis.zincrby(RedisKeys.LEADERBOARD, 1, member);
+      await this.redis.zincrby(leaderboardKey, 1, member);
     }
 
-    // Upsert scores in Postgres for all participants
+    // Upsert scores in Postgres
     for (const answer of round.answers) {
       const isCorrect = answer.selectedOption === correctOption;
       await this.prisma.score.upsert({
-        where: { userPlatformId: answer.userPlatformId },
+        where: { 
+          accountId_userPlatformId: { 
+            accountId: (round as any).accountId ?? '', 
+            userPlatformId: answer.userPlatformId 
+          } 
+        } as any,
         create: {
+          accountId: (round as any).accountId,
           userPlatformId: answer.userPlatformId,
           username: answer.username,
           score: isCorrect ? 1 : 0,
           roundsPlayed: 1,
           correctAnswers: isCorrect ? 1 : 0,
           lastUpdatedAt: new Date(),
-        },
+        } as any,
         update: {
           username: answer.username,
           score: { increment: isCorrect ? 1 : 0 },
@@ -221,82 +272,104 @@ export class RoundEngine {
       data: { status: 'resolved' },
     });
 
-    // Update Redis ROUND:ACTIVE status to 'resolved'
-    const raw = await this.redis.get(RedisKeys.ROUND_ACTIVE);
+    // Update Redis status if it matches
+    const raw = await this.redis.get(activeKey);
     if (raw) {
       const state = JSON.parse(raw) as ActiveRoundState;
       if (state.id === roundId) {
         state.status = 'resolved';
-        await this.redis.set(RedisKeys.ROUND_ACTIVE, JSON.stringify(state));
+        await this.redis.set(activeKey, JSON.stringify(state));
       }
     }
 
-    // Get top 10 leaderboard
-    const leaderboard = await this.getTopLeaderboard();
+    const leaderboard = await this.getTopLeaderboard(10, accountId);
 
-    // Emit resolved event to all clients (now reveal correctOption)
-    this.io.emit(SocketEvents.ROUND_RESOLVED, {
+    // Compute session leaderboard
+    let sessionLeaderboard = undefined;
+    if (round.gameSessionId) {
+      const roundsWithAnswers = await this.prisma.round.findMany({
+        where: { gameSessionId: round.gameSessionId },
+        include: { answers: true, question: true }
+      });
+      const userScores: Record<string, { username: string; score: number }> = {};
+      for (const r of roundsWithAnswers) {
+         const correctOpt = r.question.correctOption;
+         for (const a of r.answers) {
+            if (a.selectedOption === correctOpt) {
+               if (!userScores[a.userPlatformId]) {
+                  userScores[a.userPlatformId] = { username: a.username, score: 0 };
+               }
+               userScores[a.userPlatformId].score += 1;
+            }
+         }
+      }
+      sessionLeaderboard = Object.entries(userScores)
+        .map(([userId, data]) => ({ userId, username: data.username, score: data.score }))
+        .sort((a, b) => b.score - a.score);
+    }
+
+    this.emitToAccount(accountId, SocketEvents.ROUND_RESOLVED, {
       roundId,
+      gameSessionId: round.gameSessionId,
       correctOption,
       distribution: dist,
       correctCount,
       correctPercentage,
       totalAnswers,
       leaderboard,
+      sessionLeaderboard,
     });
 
-    // Emit leaderboard update
-    this.io.emit(SocketEvents.LEADERBOARD_UPDATED, { entries: leaderboard });
+    this.emitToAccount(accountId, SocketEvents.LEADERBOARD_UPDATED, { entries: leaderboard });
 
-    // Clean up Redis round-specific keys
     await this.cleanupRoundKeys(roundId);
-
     return result;
   }
 
   // ─── Cancel Round ────────────────────────────────────────────────────────
 
-  async cancelRound() {
-    if (!this.currentRoundId) {
-      throw new Error('No active round to cancel');
+  async cancelRound(accountId: string = 'default') {
+    const accState = this.getAccountState(accountId);
+    if (!accState.currentRoundId) {
+      throw new Error('No active round to cancel for this account');
     }
 
-    if (this.interval) {
-      clearInterval(this.interval);
-      this.interval = null;
+    if (accState.interval) {
+      clearInterval(accState.interval);
+      accState.interval = null;
     }
 
-    const roundId = this.currentRoundId;
-    this.currentRoundId = null;
+    const roundId = accState.currentRoundId;
+    accState.currentRoundId = null;
 
     await this.prisma.round.update({
       where: { id: roundId },
       data: { status: 'closed', endTime: new Date() },
     });
 
-    await this.cleanupActiveRound();
+    await this.cleanupActiveRound(accountId);
     await this.cleanupRoundKeys(roundId);
 
-    this.io.emit(SocketEvents.ROUND_CANCELLED, { roundId });
+    this.emitToAccount(accountId, SocketEvents.ROUND_CANCELLED, { roundId });
   }
 
   // ─── Helpers ─────────────────────────────────────────────────────────────
 
-  getTimeLeft(): number {
-    return this.timeLeft;
+  getTimeLeft(accountId: string = 'default'): number {
+    return this.getAccountState(accountId).timeLeft;
   }
 
-  getCurrentRoundId(): string | null {
-    return this.currentRoundId;
+  getCurrentRoundId(accountId: string = 'default'): string | null {
+    return this.getAccountState(accountId).currentRoundId;
   }
 
-  async getActiveRoundState(): Promise<ActiveRoundState | null> {
-    const raw = await this.redis.get(RedisKeys.ROUND_ACTIVE);
+  async getActiveRoundState(accountId: string = 'default'): Promise<ActiveRoundState | null> {
+    const raw = await this.redis.get(this.getActiveRoundKey(accountId));
     return raw ? (JSON.parse(raw) as ActiveRoundState) : null;
   }
 
-  async getTopLeaderboard(limit = 10): Promise<LeaderboardEntry[]> {
-    const raw = await this.redis.zrevrange(RedisKeys.LEADERBOARD, 0, limit - 1, 'WITHSCORES');
+  async getTopLeaderboard(limit = 10, accountId: string = 'default'): Promise<LeaderboardEntry[]> {
+    const raw = await this.redis.zrevrange(this.getLeaderboardKey(accountId), 0, limit - 1, 'WITHSCORES');
     const entries: LeaderboardEntry[] = [];
 
     for (let i = 0; i < raw.length; i += 2) {
@@ -319,10 +392,7 @@ export class RoundEngine {
     );
   }
 
-  private async cleanupActiveRound() {
-    const raw = await this.redis.get(RedisKeys.ROUND_ACTIVE);
-    if (raw) {
-      await this.redis.del(RedisKeys.ROUND_ACTIVE);
-    }
+  private async cleanupActiveRound(accountId: string = 'default') {
+    await this.redis.del(this.getActiveRoundKey(accountId));
   }
 }

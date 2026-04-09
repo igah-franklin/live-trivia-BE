@@ -20,14 +20,16 @@ async function socketPlugin(fastify: FastifyInstance) {
   io.on('connection', (socket) => {
     fastify.log.info({ socketId: socket.id }, 'Socket connected');
 
-    socket.on('operator:join', () => {
-      socket.join('operator');
-      fastify.log.info({ socketId: socket.id }, 'Socket joined operator room');
+    socket.on('operator:join', ({ accountId }: { accountId?: string } = {}) => {
+      const room = accountId ? `operator:${accountId}` : 'operator';
+      socket.join(room);
+      fastify.log.info({ socketId: socket.id, room }, 'Socket joined operator room');
     });
 
-    socket.on('overlay:join', () => {
-      socket.join('overlay');
-      fastify.log.info({ socketId: socket.id }, 'Socket joined overlay room');
+    socket.on('overlay:join', ({ accountId }: { accountId?: string } = {}) => {
+      const room = accountId ? `overlay:${accountId}` : 'overlay';
+      socket.join(room);
+      fastify.log.info({ socketId: socket.id, room }, 'Socket joined overlay room');
     });
 
     socket.on('disconnect', (reason) => {
